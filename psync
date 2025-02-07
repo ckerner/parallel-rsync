@@ -1,0 +1,134 @@
+#!/usr/bin/env ruby
+
+require 'socket'
+require 'json'
+require 'fileutils'
+require 'optparse'
+require 'securerandom'
+
+options = { port: 8812 }
+OptionParser.new do |opts|
+  opts.banner = "Usage: ruby script.rb server [options] | client [options]"
+  opts.on("--port PORT", "Server/client port (default: 8812)") { |v| options[:port] = v.to_i }
+  opts.on("--source DIR", "Source directory (server)") { |v| options[:source_dir] = v }
+  opts.on("--depth DEPTH", "Depth to search (server)") { |v| options[:depth] = v.to_i }
+  opts.on("--remote SERVERS", "Comma-separated list of remote servers (server)") { |v| options[:remote_servers] = v.split(',') }
+  opts.on("--remote-path PATH", "Remote path for synchronization (server)") { |v| options[:remote_path] = v }
+  opts.on("--server-ip IP", "Server IP address (client)") { |v| options[:server_ip] = v }
+  opts.on("--debug", "Enable debug mode (server)") { options[:debug] = true }
+  opts.on("--help", "Displays help") do
+    puts opts
+    exit
+  end
+end.parse!
+
+class Server
+  def initialize(options)
+    @port = options[:port]
+    @source_dir = options[:source_dir]
+    @depth = options[:depth]
+    @remote_servers = options[:remote_servers]
+    @remote_path = options[:remote_path]
+    @debug = options[:debug]
+    @jobs = []
+    @log_file = "server.log"
+    FileUtils.touch(@log_file)
+  end
+
+  def log(message)
+    puts message
+    File.open(@log_file, 'a') { |f| f.puts("[#{Time.now}] #{message}") }
+  end
+
+  def build_jobs
+    log("Building job queue...")
+    (0..@depth).each do |level|
+      dirs = `find #{@source_dir} -mindepth #{level} -maxdepth #{level} -type d`.split("\n")
+      dirs.each do |dir|
+        @remote_servers.each do |server|
+          recursive = (level == @depth) ? '-r' : ''
+          rsync_cmd = "rsync #{recursive} #{dir}/ #{server}:#{@remote_path}/"
+          @jobs << rsync_cmd
+          log("Generated rsync command: #{rsync_cmd}") if @debug
+        end
+      end
+    end
+    log("Job queue built with #{@jobs.size} tasks.")
+  end
+
+  def start
+    build_jobs
+    server = TCPServer.new(@port)
+    log("Server started on port #{@port}")
+    loop do
+      Thread.start(server.accept) do |client|
+        if @jobs.empty?
+          client.puts({ status: 'no work' }.to_json)
+          client.close
+          next
+        end
+        job = @jobs.shift
+        log("Sending job: #{job}")
+        client.puts({ status: 'work', command: job }.to_json)
+        result = JSON.parse(client.gets.chomp)
+        log("Client reported: #{result['status']} for job: #{job}")
+        client.close
+      end
+    end
+  end
+end
+
+class Client
+  def initialize(options)
+    @server = options[:server_ip]
+    @port = options[:port]
+    @log_file = "client_#{SecureRandom.hex(4)}.log"
+    FileUtils.touch(@log_file)
+  end
+
+  def log(message)
+    puts message
+    File.open(@log_file, 'a') { |f| f.puts("[#{Time.now}] #{message}") }
+  end
+
+  def start
+    loop do
+      begin
+        socket = TCPSocket.open(@server, @port)
+        response = JSON.parse(socket.gets.chomp)
+        if response['status'] == 'no work'
+          log("No work available. Exiting...")
+          socket.close
+          break
+        end
+        command = response['command']
+        log("Executing: #{command}")
+        result = system(command) ? 'success' : 'failure'
+        socket.puts({ status: result }.to_json)
+        socket.close
+      rescue StandardError => e
+        log("Error: #{e.message}")
+      end
+    end
+  end
+end
+
+if ARGV[0] == 'server'
+  if options[:source_dir].nil? || options[:depth].nil? || options[:remote_servers].nil? || options[:remote_path].nil?
+    puts "Missing server parameters. Use --help for details."
+    exit 1
+  end
+  server = Server.new(options)
+  server.start
+elsif ARGV[0] == 'client'
+  if options[:server_ip].nil?
+    puts "Missing client parameters. Use --help for details."
+    exit 1
+  end
+  client = Client.new(options)
+  client.start
+else
+  puts "Usage: ruby script.rb <server|client> [options]"
+  exit 1
+end
+
