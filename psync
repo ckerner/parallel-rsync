@@ -30,9 +30,10 @@ class Server
     @remote_servers = options[:remote_servers]
     @remote_path = options[:remote_path]
     @debug = options[:debug]
-    @jobs = []
+    @jobs = Queue.new
     @log_file = "server.log"
     FileUtils.touch(@log_file)
+    @active_clients = 0
   end
 
   def log(message)
@@ -44,15 +45,15 @@ class Server
     log("Building job queue...")
     (0..@depth).each do |level|
       dirs = `find #{@source_dir} -mindepth #{level} -maxdepth #{level} -type d`.split("\n")
-      #log("Found directories at depth #{level}: #{dirs}") if @debug
       dirs.each do |dir|
+        relative_path = dir.sub(@source_dir, '').sub(%r{^/}, '')
         @remote_servers.each do |server|
           recursive = (level == @depth) ? '-r' : ''
-	  relative_path = dir.sub(@source_dir, '').sub(%r{^/}, '')  # Get relative path
-          rsync_cmd = "rsync #{recursive} #{dir}/ #{server}:#{@remote_path}/#{relative_path}/"
-          #rsync_cmd = "rsync #{recursive} #{dir}/ #{server}:#{@remote_path}/"
-          @jobs << rsync_cmd
-          log("Generated rsync command: #{rsync_cmd}") if @debug
+          identifier = SecureRandom.hex(8)
+          log_file = "transfer_#{identifier}.log"
+          rsync_cmd = "rsync -avzHAX --progress #{recursive} #{dir}/ #{server}:#{@remote_path}/#{relative_path}/ &> #{log_file}"
+          @jobs.push({ command: rsync_cmd, identifier: identifier, server: server, path: relative_path })
+          log("Generated rsync command for #{dir} -> #{server}:#{@remote_path}/#{relative_path} with ID #{identifier}") if @debug
         end
       end
     end
@@ -60,21 +61,27 @@ class Server
   end
 
   def start
-    build_jobs
-    server = TCPServer.new('0.0.0.0', @port)
+    Thread.new { build_jobs }
+    server = TCPServer.new(@port)
     log("Server started on port #{@port}")
     loop do
       Thread.start(server.accept) do |client|
+        if @jobs.empty? && @active_clients == 0
+          log("All jobs processed. Shutting down server.")
+          exit
+        end
         if @jobs.empty?
           client.puts({ status: 'no work' }.to_json)
           client.close
           next
         end
-        job = @jobs.shift
-        log("Sending job: #{job}")
-        client.puts({ status: 'work', command: job }.to_json)
+        job = @jobs.pop
+        @active_clients += 1
+        log("Assigning job: #{job[:identifier]} (#{job[:path]}) to client at #{client.peeraddr.last}")
+        client.puts({ status: 'work', command: job[:command], identifier: job[:identifier], path: job[:path] }.to_json)
         result = JSON.parse(client.gets.chomp)
-        log("Client reported: #{result['status']} for job: #{job}")
+        log("Client #{client.peeraddr.last} reported: #{result['status']} for job: #{job[:identifier]} (#{job[:path]})")
+        @active_clients -= 1
         client.close
       end
     end
@@ -105,9 +112,14 @@ class Client
           break
         end
         command = response['command']
-        log("Executing: #{command}")
-        result = system(command) ? 'success' : 'failure'
-        socket.puts({ status: result }.to_json)
+        identifier = response['identifier']
+        path = response['path']
+        log_file = "transfer_#{identifier}.log"
+        log("Executing job #{identifier} (#{path}): #{command}")
+        result = system(command)
+        status = result ? 'success' : 'failure'
+        log("Job #{identifier} (#{path}) completed with status: #{status}")
+        socket.puts({ status: status, identifier: identifier }.to_json)
         socket.close
       rescue StandardError => e
         log("Error: #{e.message}")
