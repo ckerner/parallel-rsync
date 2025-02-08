@@ -39,6 +39,7 @@ class Server
     @log_file = "server_logs/server.log"
     FileUtils.touch(@log_file)
     @active_clients = 0
+    @server_running = true
   end
 
   def log(message)
@@ -70,9 +71,12 @@ class Server
     server = TCPServer.new(@port)
     log("Server started on port #{@port}")
     loop do
+      break unless @server_running
       Thread.start(server.accept) do |client|
         if @jobs.empty? && @active_clients == 0
           log("All jobs processed. Shutting down server.")
+          @server_running = false
+          server.close
           exit
         end
         if @jobs.empty?
@@ -84,8 +88,11 @@ class Server
         @active_clients += 1
         log("Assigning job: #{job[:identifier]} (#{job[:path]}) to client at #{client.peeraddr.last}")
         client.puts({ status: 'work', command: job[:command], identifier: job[:identifier], path: job[:path] }.to_json)
-        result = JSON.parse(client.gets.chomp)
-        log("Client #{client.peeraddr.last} reported: #{result['status']} for job: #{job[:identifier]} (#{job[:path]})")
+        response = client.gets
+        if response
+          result = JSON.parse(response.chomp)
+          log("Client #{client.peeraddr.last} reported: #{result['status']} for job: #{job[:identifier]} (#{job[:path]})")
+        end
         @active_clients -= 1
         client.close
       end
@@ -111,15 +118,21 @@ class Client
     loop do
       begin
         socket = TCPSocket.open(@server, @port)
-        response = JSON.parse(socket.gets.chomp)
-        if response['status'] == 'no work'
+        response = socket.gets
+        if response.nil?
+          log("No response from server. Exiting...")
+          socket.close
+          break
+        end
+        parsed_response = JSON.parse(response.chomp)
+        if parsed_response['status'] == 'no work'
           log("No work available. Exiting...")
           socket.close
           break
         end
-        command = response['command']
-        identifier = response['identifier']
-        path = response['path']
+        command = parsed_response['command']
+        identifier = parsed_response['identifier']
+        path = parsed_response['path']
         log_file = "transfer_logs/transfer_#{identifier}.log"
         log("Executing job #{identifier} (#{path}): #{command}")
         result = system(command)
