@@ -15,9 +15,9 @@ CURDIR=$(shell pwd)
 #	cp -fp $(CURDIR)/backup_acls.py $(LOCLDIR)/backup_acls.py
 
 clean:
-	rm -f server.log
-	rm -f client_*.log
-	rm -f transfer_*.log
+	rm -f server_logs/server.log
+	rm -f client_logs/client_*.log
+	rm -f transfer_logs/transfer_*.log
 
 .FORCE:
 
