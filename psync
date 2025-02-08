@@ -5,6 +5,7 @@ require 'json'
 require 'fileutils'
 require 'optparse'
 require 'securerandom'
+require 'socket'
 
 options = { port: 8812 }
 OptionParser.new do |opts|
@@ -22,6 +23,10 @@ OptionParser.new do |opts|
   end
 end.parse!
 
+FileUtils.mkdir_p('server_logs')
+FileUtils.mkdir_p('client_logs')
+FileUtils.mkdir_p('transfer_logs')
+
 class Server
   def initialize(options)
     @port = options[:port]
@@ -31,7 +36,7 @@ class Server
     @remote_path = options[:remote_path]
     @debug = options[:debug]
     @jobs = Queue.new
-    @log_file = "server.log"
+    @log_file = "server_logs/server.log"
     FileUtils.touch(@log_file)
     @active_clients = 0
   end
@@ -50,7 +55,7 @@ class Server
         @remote_servers.each do |server|
           recursive = (level == @depth) ? '-r' : ''
           identifier = SecureRandom.hex(8)
-          log_file = "transfer_#{identifier}.log"
+          log_file = "transfer_logs/transfer_#{identifier}.log"
           rsync_cmd = "rsync -avzHAX --progress #{recursive} #{dir}/ #{server}:#{@remote_path}/#{relative_path}/ &> #{log_file}"
           @jobs.push({ command: rsync_cmd, identifier: identifier, server: server, path: relative_path })
           log("Generated rsync command for #{dir} -> #{server}:#{@remote_path}/#{relative_path} with ID #{identifier}") if @debug
@@ -92,7 +97,8 @@ class Client
   def initialize(options)
     @server = options[:server_ip]
     @port = options[:port]
-    @log_file = "client_#{SecureRandom.hex(4)}.log"
+    hostname = Socket.gethostname
+    @log_file = "client_logs/client_#{hostname}_#{SecureRandom.hex(4)}.log"
     FileUtils.touch(@log_file)
   end
 
@@ -114,15 +120,19 @@ class Client
         command = response['command']
         identifier = response['identifier']
         path = response['path']
-        log_file = "transfer_#{identifier}.log"
+        log_file = "transfer_logs/transfer_#{identifier}.log"
         log("Executing job #{identifier} (#{path}): #{command}")
         result = system(command)
         status = result ? 'success' : 'failure'
         log("Job #{identifier} (#{path}) completed with status: #{status}")
         socket.puts({ status: status, identifier: identifier }.to_json)
         socket.close
+      rescue Errno::ECONNREFUSED
+        log("Error: Connection refused. Server might not be running. Exiting...")
+        exit 1
       rescue StandardError => e
         log("Error: #{e.message}")
+        exit 1
       end
     end
   end
