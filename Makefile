@@ -1,18 +1,12 @@
 CURDIR=$(shell pwd)
+LOCLDIR=/usr/local/bin
 
-#install: python ssacl utils
+install: psync
 
-#update: purge_links ssacl python utils
+update: psync
 
-#ssacl:	.FORCE
-#	cp -fp $(CURDIR)/ssacl $(LOCLDIR)/ssacl
-
-#python:	.FORCE
-#	$(PYTHON) $(CURDIR)/setup.py install
-
-#utils:	.FORCE
-#	cp -fp $(CURDIR)/backup_acls.sh $(LOCLDIR)/backup_acls.sh
-#	cp -fp $(CURDIR)/backup_acls.py $(LOCLDIR)/backup_acls.py
+psync:	.FORCE
+	cp -fp $(CURDIR)/psync $(LOCLDIR)/psync
 
 clean:
 	rm -f server_logs/server.log

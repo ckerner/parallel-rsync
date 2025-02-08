@@ -7,13 +7,19 @@ require 'optparse'
 require 'securerandom'
 require 'socket'
 
-options = { port: 8812 }
+options = { port: 8812, depth: 3 }
 OptionParser.new do |opts|
   opts.banner = "Usage: ruby script.rb server [options] | client [options]"
   opts.on("--port PORT", "Server/client port (default: 8812)") { |v| options[:port] = v.to_i }
   opts.on("--source DIR", "Source directory (server)") { |v| options[:source_dir] = v }
-  opts.on("--depth DEPTH", "Depth to search (server)") { |v| options[:depth] = v.to_i }
-  opts.on("--remote SERVERS", "Comma-separated list of remote servers (server)") { |v| options[:remote_servers] = v.split(',') }
+  opts.on("--depth DEPTH", "Depth to search (server, default: 3)") { |v| options[:depth] = v.to_i }
+  opts.on("--remote SERVERS", "Comma-separated list of remote servers or a file containing server list (server)") do |v|
+    if File.file?(v)
+      options[:remote_servers] = File.readlines(v).map(&:chomp)
+    else
+      options[:remote_servers] = v.split(',')
+    end
+  end
   opts.on("--remote-path PATH", "Remote path for synchronization (server)") { |v| options[:remote_path] = v }
   opts.on("--server-ip IP", "Server IP address (client)") { |v| options[:server_ip] = v }
   opts.on("--debug", "Enable debug mode (server)") { options[:debug] = true }
@@ -100,59 +106,8 @@ class Server
   end
 end
 
-class Client
-  def initialize(options)
-    @server = options[:server_ip]
-    @port = options[:port]
-    hostname = Socket.gethostname
-    @log_file = "client_logs/client_#{hostname}_#{SecureRandom.hex(4)}.log"
-    FileUtils.touch(@log_file)
-  end
-
-  def log(message)
-    puts message
-    File.open(@log_file, 'a') { |f| f.puts("[#{Time.now}] #{message}") }
-  end
-
-  def start
-    loop do
-      begin
-        socket = TCPSocket.open(@server, @port)
-        response = socket.gets
-        if response.nil?
-          log("No response from server. Exiting...")
-          socket.close
-          break
-        end
-        parsed_response = JSON.parse(response.chomp)
-        if parsed_response['status'] == 'no work'
-          log("No work available. Exiting...")
-          socket.close
-          break
-        end
-        command = parsed_response['command']
-        identifier = parsed_response['identifier']
-        path = parsed_response['path']
-        log_file = "transfer_logs/transfer_#{identifier}.log"
-        log("Executing job #{identifier} (#{path}): #{command}")
-        result = system(command)
-        status = result ? 'success' : 'failure'
-        log("Job #{identifier} (#{path}) completed with status: #{status}")
-        socket.puts({ status: status, identifier: identifier }.to_json)
-        socket.close
-      rescue Errno::ECONNREFUSED
-        log("Error: Connection refused. Server might not be running. Exiting...")
-        exit 1
-      rescue StandardError => e
-        log("Error: #{e.message}")
-        exit 1
-      end
-    end
-  end
-end
-
 if ARGV[0] == 'server'
-  if options[:source_dir].nil? || options[:depth].nil? || options[:remote_servers].nil? || options[:remote_path].nil?
+  if options[:source_dir].nil? || options[:remote_servers].nil? || options[:remote_path].nil?
     puts "Missing server parameters. Use --help for details."
     exit 1
   end
