@@ -1,4 +1,4 @@
-#!/usr/bin/env ruby
+#!/usr/local/bin/ruby
 
 require 'socket'
 require 'json'
@@ -46,6 +46,7 @@ class Server
     FileUtils.touch(@log_file)
     @active_clients = 0
     @server_running = true
+    @all_jobs_dispatched = false
   end
 
   def log(message)
@@ -64,43 +65,126 @@ class Server
           identifier = SecureRandom.hex(8)
           log_file = "transfer_logs/transfer_#{identifier}.log"
           rsync_cmd = "rsync -avzHAX --progress #{recursive} #{dir}/ #{server}:#{@remote_path}/#{relative_path}/ &> #{log_file}"
-          @jobs.push({ command: rsync_cmd, identifier: identifier, server: server, path: relative_path })
+          @jobs.push({ command: rsync_cmd, identifier: identifier, server: server, path: dir })
           log("Generated rsync command for #{dir} -> #{server}:#{@remote_path}/#{relative_path} with ID #{identifier}") if @debug
         end
       end
     end
     log("Job queue built with #{@jobs.size} tasks.")
+    @all_jobs_dispatched = true
   end
 
   def start
+    begin
+      server = TCPServer.new(@port)
+    rescue Errno::EADDRINUSE
+      log("Error: Port #{@port} is already in use. Exiting.")
+      exit 1
+    end
+
     Thread.new { build_jobs }
-    server = TCPServer.new(@port)
     log("Server started on port #{@port}")
     loop do
       break unless @server_running
-      Thread.start(server.accept) do |client|
-        if @jobs.empty? && @active_clients == 0
-          log("All jobs processed. Shutting down server.")
-          @server_running = false
-          server.close
-          exit
-        end
-        if @jobs.empty?
-          client.puts({ status: 'no work' }.to_json)
-          client.close
-          next
-        end
-        job = @jobs.pop
-        @active_clients += 1
-        log("Assigning job: #{job[:identifier]} (#{job[:path]}) to client at #{client.peeraddr.last}")
-        client.puts({ status: 'work', command: job[:command], identifier: job[:identifier], path: job[:path] }.to_json)
+      client = server.accept
+      if @all_jobs_dispatched && @jobs.empty? && @active_clients == 0
+        log("All jobs processed. Shutting down server.")
+        @server_running = false
+        server.close
+        break
+      end
+      if @jobs.empty?
+        client.puts({ status: 'no work' }.to_json)
+        client.close
+        next
+      end
+      job = @jobs.pop
+      @active_clients += 1
+      log("[#{Time.now}] Dispatched: #{client.peeraddr.last} #{job[:identifier]} #{job[:path]}")
+      client.puts({ status: 'work', command: job[:command], identifier: job[:identifier], path: job[:path] }.to_json)
+      # Wait for client to respond with completion
+      begin
         response = client.gets
         if response
-          result = JSON.parse(response.chomp)
-          log("Client #{client.peeraddr.last} reported: #{result['status']} for job: #{job[:identifier]} (#{job[:path]})")
+           result = JSON.parse(response.chomp)
+           log("[#{Time.now}] Completed: #{client.peeraddr.last} #{result['identifier']} #{result['path']} RC: #{result['return_code']}")
         end
-        @active_clients -= 1
+      rescue StandardError => e
+        log("Error receiving response from client: #{e.message}")
+      ensure
         client.close
+        @active_clients -= 1
+      end
+    end
+  end
+end
+
+class Client
+  def initialize(options)
+    @server_ip = options[:server_ip]
+    @port = options[:port]
+    @log_file = "client_logs/client_#{Socket.gethostname}_#{Process.pid}.log"
+    FileUtils.touch(@log_file)
+    @return_codes = Hash.new(0)
+  end
+
+  def log(message)
+    puts message
+    File.open(@log_file, 'a') { |f| f.puts("[#{Time.now}] #{message}") }
+  end
+
+  def generate_report
+    return if @return_codes.nil? || @return_codes.empty?
+    log("--- Transfer Summary Report ---")
+    log("Total rsync transfers: #{@return_codes.values.sum}")
+    @return_codes.each do |code, count|
+      log("Return Code #{code}: #{count} occurrences")
+    end
+    log("-------------------------------")
+  end
+
+  def start
+    log("Client started, connecting to #{@server_ip}:#{@port}")
+    @return_codes ||= {}
+    loop do
+       begin
+         socket = TCPSocket.new(@server_ip, @port)
+         response = socket.gets
+         if response.nil?
+           log("No response from server. Exiting.")
+           generate_report
+           exit 1
+         end
+         response = JSON.parse(response.chomp)
+         if response["status"] == "no work"
+           log("No work available. Generating report and exiting.")
+           generate_report
+           socket.close
+           break
+         end
+
+         log("Received task: #{response['identifier']} #{response['path']}")
+         system(response['command'])
+         rc = $?.exitstatus
+
+         # Send completion message before closing
+         socket.puts({ identifier: response['identifier'], path: response['path'], return_code: rc }.to_json)
+
+         @return_codes[rc] += 1
+         log("Task #{response['identifier']} completed with return code #{rc}")
+         socket.close
+       rescue Errno::EPIPE
+         log("Error: Broken pipe - server may have closed connection.")
+         generate_report
+         exit 1
+       rescue Errno::ECONNREFUSED
+         log("Error: Connection refused. Exiting.")
+         generate_report
+         exit 1
+       rescue StandardError => e
+         log("Error: #{e.message}")
+         generate_report
+         exit 1
       end
     end
   end
