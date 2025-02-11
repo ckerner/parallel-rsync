@@ -19,6 +19,35 @@ and you can use multiple client nodes as well to fan out the sync.
 psync --server public-server
 
 
+If are using a parallel filesystem and have multiple target nodes, you can specify them in a file or on the command
+line and the transfers will be rotated between all of the nodes in the list. For example:
+
+psync --source /archive/software --depth 3 --remote xfer01,xfer02,xfer03,xfer04 --remote-path /disaster/backup 
+
+or
+
+psync --source /archive/software --depth 3 --remote xfernodes --remote-path /disaster/backup 
+
+cat xfernodes
+xfer01
+xfer02
+xfer03
+xfer04
+
+
+If you want to find the status of an individual transfer, you can:
+
+psync log /path/of/directory
+
+This will parse the server log to see which transfer id maps to that path and the displays the log.
+
+
+If you want to watch the log of an individual transfer as it is running, you can:
+
+psync tail /path/of/directory
+
+This will parse the server log to see which transfer id maps to that path and the displays the log.
+
 ## Author
 Chad Kerner, Senior Storage Engineer  
 National Center for Supercomputing Applications  
