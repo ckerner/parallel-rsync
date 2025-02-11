@@ -20,10 +20,10 @@ psync --server public-server
 
 
 ## Author
-Chad Kerner, Senior Storage Engineer
-National Center for Supercomputing Applications
-University of Illinois, Urbana-Champaign
-ckerner@illinois.edu    chad.kerner@gmail.com
+Chad Kerner, Senior Storage Engineer  
+National Center for Supercomputing Applications  
+University of Illinois, Urbana-Champaign  
+ckerner@illinois.edu    chad.kerner@gmail.com  
 
 
 ## Warranty
