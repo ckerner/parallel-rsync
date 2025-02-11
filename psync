@@ -9,7 +9,7 @@ require 'socket'
 
 options = { port: 8812, depth: 3 }
 OptionParser.new do |opts|
-  opts.banner = "Usage: ruby script.rb server [options] | client [options]"
+  opts.banner = "Usage: psync server [options] | client [options] | log <pathname> "
   opts.on("--port PORT", "Server/client port (default: 8812)") { |v| options[:port] = v.to_i }
   opts.on("--source DIR", "Source directory (server)") { |v| options[:source_dir] = v }
   opts.on("--depth DEPTH", "Depth to search (server, default: 3)") { |v| options[:depth] = v.to_i }
@@ -219,6 +219,42 @@ elsif ARGV[0] == 'client'
   end
   client = Client.new(options)
   client.start
+elsif ARGV[0] == 'log' || ARGV[0] == 'tail'
+  if ARGV[1].nil?
+    puts "Missing path to search for. Use --help for details."
+    exit 1
+  end
+  server_log = 'server_logs/server.log'
+  search_path = ARGV[1]
+  File.foreach(server_log) do |line|
+    if line.include?(search_path)
+      if line.include?('Dispatched')
+         fields = line.split 
+         log_token = fields[8] if fields.length >= 9
+         log_file = "transfer_logs/transfer_#{log_token}.log"
+         puts "Log File: #{log_file}"
+	 if ARGV[0] == 'log'
+           system("less #{log_file}")
+	 elsif ARGV[0] == 'tail'
+           pid = spawn("tail -f #{log_file}")
+           trap("INT") do
+               Process.kill("TERM", pid)
+               Process.wait(pid)
+           end
+
+           begin
+             Process.wait(pid)
+           rescue Errno::ECHILD
+             puts ""
+	   end
+         end
+         exit 0
+      end
+    else
+      puts "Log file for #{search_path} not found."
+      exit 1
+    end
+  end
 else
   puts "Usage: ruby script.rb <server|client> [options]"
   exit 1
