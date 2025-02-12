@@ -4,6 +4,19 @@ As filesystems become larger, migration of them becomes exponentially more compl
 can operate on the filesystem in parallel are essential. It is no longer viable to try and walk the entire
 file tree single threaded to move data.
 
+## Command Options
+
+Usage: psync server [options] | client [options] | log <pathname> | tail <pathname> | task <token id>  
+        --port PORT                  Server/client port (default: 8812)  
+        --source DIR                 Source directory (server)  
+        --depth DEPTH                Depth to search (server, default: 3)  
+        --remote SERVERS             Comma-separated list of remote servers or a file containing server list (server)  
+        --remote-path PATH           Remote path for synchronization (server)  
+        --server IP                  Server IP address (client)  
+        --debug                      Enable debug mode (server)  
+        --dry-run                    Enable dry-run mode. No transfers. (client)  
+        --help                       Displays help  
+
 ## Getting started
 
 You start off the process by initiating a psync server:
