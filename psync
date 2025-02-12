@@ -1,4 +1,13 @@
 #!/usr/local/bin/ruby
+#
+# psync - Parallel rsync client/server utility
+#
+# Chad Kerner                    chad.kerner@gmail.com
+# Senior Storage Engineer         ckerner@illinois.edu
+# Storage Enabling Technologies
+# National Center for Supercomputing Applications
+# University of Illinois Urbana-Champaign
+#
 
 require 'socket'
 require 'json'

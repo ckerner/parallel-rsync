@@ -13,9 +13,9 @@ Usage: psync server [options] | client [options] | log <pathname> | tail <pathna
         --remote SERVERS             Comma-separated list of remote servers or a file containing server list (server)  
         --remote-path PATH           Remote path for synchronization (server)  
         --server IP                  Server IP address (client)  
-        --debug                      Enable debug mode (server)  
+        --debug                      Enable debug mode   
         --dry-run                    Enable dry-run mode. No transfers. (client)  
-        --help                       Displays help  
+        --help                       Display help  
 
 ## Getting started
 
