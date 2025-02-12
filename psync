@@ -94,7 +94,7 @@ class Server
 	  do_xfers = @dryrun ? '-n' : ''
           identifier = SecureRandom.hex(8)
           log_file = "transfer_logs/transfer_#{identifier}.log"
-          rsync_cmd = "rsync #{@rsync_opts} #{recursive} #{do_xfers} #{dir}/ #{server}:#{@remote_path}/#{relative_path}/ &> #{log_file}"
+          rsync_cmd = "rsync #{@rsync_opts} #{recursive} #{do_xfers} #{dir}/ #{server}:#{@remote_path}/#{relative_path}/ &>> #{log_file}"
           @jobs.push({ command: rsync_cmd, identifier: identifier, server: server, path: dir })
           log("Generated rsync command for #{dir} -> #{server}:#{@remote_path}/#{relative_path} with ID #{identifier}") if @debug
         end
@@ -198,6 +198,10 @@ class Client
          end
 
          log("Received task: #{response['identifier']} #{response['path']}")
+	 logfile = response['command'].split.last
+         File.open(logfile, 'w') do |file|
+           file.puts("Command: #{response['command']}")
+	 end
          system(response['command'])
          rc = $?.exitstatus
 
