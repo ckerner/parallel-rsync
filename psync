@@ -7,9 +7,9 @@ require 'optparse'
 require 'securerandom'
 require 'socket'
 
-options = { port: 8812, depth: 3 }
+options = { port: 8812, depth: 3, debug: false }
 OptionParser.new do |opts|
-  opts.banner = "Usage: psync server [options] | client [options] | log <pathname> "
+  opts.banner = "Usage: psync server [options] | client [options] | log <pathname> | tail <pathname> | task <token id> "
   opts.on("--port PORT", "Server/client port (default: 8812)") { |v| options[:port] = v.to_i }
   opts.on("--source DIR", "Source directory (server)") { |v| options[:source_dir] = v }
   opts.on("--depth DEPTH", "Depth to search (server, default: 3)") { |v| options[:depth] = v.to_i }
@@ -22,9 +22,9 @@ OptionParser.new do |opts|
   end
   opts.on("--remote-path PATH", "Remote path for synchronization (server)") { |v| options[:remote_path] = v }
   opts.on("--server IP", "Server IP address (client)") { |v| options[:server] = v }
-  opts.on("--debug", "Enable debug mode (server)") { options[:debug] = true }
-  opts.on("--dry-run", "Enable dry-run mode. No transfers. (client)") { options[:dryrun] = true }
-  opts.on("--help", "Displays help") do
+  opts.on("--debug", "Enable debug mode ") { options[:debug] = true }
+  opts.on("--dry-run", "Enable dry-run mode. No transfers. (server)") { options[:dryrun] = true }
+  opts.on("--help", "Display help") do
     puts opts
     exit
   end
@@ -199,10 +199,12 @@ class Client
          end
 
          log("Received task: #{response['identifier']} #{response['path']}")
+
+	 # Write the rsync command to the log file for reference
 	 logfile = response['command'].split.last
-         File.open(logfile, 'w') do |file|
-           file.puts("Command: #{response['command']}")
-	 end
+	 File.open(logfile, 'w') { |f| f.puts("Command: #{response['command']}") }
+
+	 # Perform the rsync
          system(response['command'])
          rc = $?.exitstatus
 
@@ -307,7 +309,7 @@ elsif ARGV[0] == 'task'
   log_file = "transfer_logs/transfer_#{log_token}.log"
   system("less #{log_file}")
 else
-  puts "Usage: ruby script.rb <server|client> [options]"
+  puts "Usage: psync < server | client | log | tail | task > [options]"
   exit 1
 end
 
