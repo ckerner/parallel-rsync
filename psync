@@ -23,6 +23,7 @@ OptionParser.new do |opts|
   opts.on("--remote-path PATH", "Remote path for synchronization (server)") { |v| options[:remote_path] = v }
   opts.on("--server IP", "Server IP address (client)") { |v| options[:server] = v }
   opts.on("--debug", "Enable debug mode (server)") { options[:debug] = true }
+  opts.on("--dry-run", "Enable dry-run mode. No transfers. (client)") { options[:dryrun] = true }
   opts.on("--help", "Displays help") do
     puts opts
     exit
@@ -41,6 +42,7 @@ class Server
     @remote_servers = options[:remote_servers]
     @remote_path = options[:remote_path]
     @debug = options[:debug]
+    @dryrun = options[:dryrun]
     @jobs = Queue.new
     @log_file = "server_logs/server.log"
     FileUtils.touch(@log_file)
@@ -48,6 +50,22 @@ class Server
     @server_running = true
     @all_jobs_dispatched = false
     @return_codes = Hash.new(0)
+
+    # THESE ARE     |---------------> skip newer files on receiver
+    # THE NECESSARY ||--------------> directories
+    # OPTIONS FOR   |||-------------> copy symlinks
+    # THE SYNC TO   ||||------------> copy hard links
+    # COPY ALL OF   |||||-----------> copy permissions
+    # THE DATA.     ||||||----------> copy owner
+    # IF YOU ARE    |||||||---------> copy group
+    # GOING TO      ||||||||--------> copy ACLs
+    # MODIFY THEM   |||||||||-------> copy XATTRs
+    # IT IS AT YOUR ||||||||||------> show progress 
+    # OWN RISK.     |||||||||||-----> copy device files
+    #               ||||||||||||----> run in verbose mode
+    # USE --dry-run |||||||||||||---> Add a 2nd to log every file 
+    # TO VERIFY     |||||||||||||   
+    @rsync_opts = '-udlHpogAXPDvv'
   end
 
   def log(message)
@@ -73,9 +91,10 @@ class Server
         relative_path = dir.sub(@source_dir, '').sub(%r{^/}, '')
         @remote_servers.each do |server|
           recursive = (level == @depth) ? '-r' : ''
+	  do_xfers = @dryrun ? '-n' : ''
           identifier = SecureRandom.hex(8)
           log_file = "transfer_logs/transfer_#{identifier}.log"
-          rsync_cmd = "rsync -avzHAX --progress #{recursive} #{dir}/ #{server}:#{@remote_path}/#{relative_path}/ &> #{log_file}"
+          rsync_cmd = "rsync #{@rsync_opts} #{recursive} #{do_xfers} #{dir}/ #{server}:#{@remote_path}/#{relative_path}/ &> #{log_file}"
           @jobs.push({ command: rsync_cmd, identifier: identifier, server: server, path: dir })
           log("Generated rsync command for #{dir} -> #{server}:#{@remote_path}/#{relative_path} with ID #{identifier}") if @debug
         end
@@ -188,6 +207,7 @@ class Client
          @return_codes[rc] += 1
          log("Task #{response['identifier']} completed with return code #{rc}")
          socket.close
+	 exit 1
        rescue Errno::EPIPE
          log("Error: Broken pipe - server may have closed connection.")
          generate_report
@@ -202,6 +222,54 @@ class Client
          exit 1
       end
     end
+  end
+end
+
+
+def display_log(display_type, search_path)
+  server_log = 'server_logs/server.log'
+  log_found = false  
+
+  File.foreach(server_log) do |line|
+    next unless line.include?(search_path)
+
+    log_found = true
+
+    if line.include?('Dispatched')
+      fields = line.split
+      if fields.length >= 9
+        log_token = fields[8]
+        log_file = "transfer_logs/transfer_#{log_token}.log"
+        puts "Log File: #{log_file}"
+
+        if display_type == 'log'
+          system("less #{log_file}")
+        elsif display_type == 'tail'
+          # This will keep ctrl-c to exit tail from killing script
+          pid = spawn("tail -f #{log_file}")
+          trap("INT") do
+            Process.kill("TERM", pid) rescue nil
+            Process.wait(pid) rescue nil
+          end
+
+          begin
+            Process.wait(pid)
+          rescue Errno::ECHILD
+            puts ""
+          end
+        end
+        exit 0  # Stop processing after finding a match
+      else
+        puts "Error: Unable to extract log token."
+        exit 1
+      end
+    end
+  end
+
+  # If no match was found, print the message outside the loop
+  unless log_found
+    puts "Log file for #{search_path} not found."
+    exit 1
   end
 end
 
@@ -224,37 +292,7 @@ elsif ARGV[0] == 'log' || ARGV[0] == 'tail'
     puts "Missing path to search for. Use --help for details."
     exit 1
   end
-  server_log = 'server_logs/server.log'
-  search_path = ARGV[1]
-  File.foreach(server_log) do |line|
-    if line.include?(search_path)
-      if line.include?('Dispatched')
-         fields = line.split 
-         log_token = fields[8] if fields.length >= 9
-         log_file = "transfer_logs/transfer_#{log_token}.log"
-         puts "Log File: #{log_file}"
-	 if ARGV[0] == 'log'
-           system("less #{log_file}")
-	 elsif ARGV[0] == 'tail'
-           pid = spawn("tail -f #{log_file}")
-           trap("INT") do
-               Process.kill("TERM", pid)
-               Process.wait(pid)
-           end
-
-           begin
-             Process.wait(pid)
-           rescue Errno::ECHILD
-             puts ""
-	   end
-         end
-         exit 0
-      end
-    else
-      puts "Log file for #{search_path} not found."
-      exit 1
-    end
-  end
+  display_log( ARGV[0], ARGV[1] )
 else
   puts "Usage: ruby script.rb <server|client> [options]"
   exit 1
