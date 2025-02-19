@@ -6,7 +6,7 @@ file tree single threaded to move data.
 
 ## Command Options
 
-Usage: psync server [options] | client [options] | log <pathname> | tail <pathname> | task <token id>  
+Usage: psync server [options] | client [options] | log <pathname|token id> | tail <pathname|token id> | state   
         --port PORT                  Server/client port (default: 8812)  
         --source DIR                 Source directory (server)  
         --depth DEPTH                Depth to search (server, default: 3)  
@@ -14,8 +14,9 @@ Usage: psync server [options] | client [options] | log <pathname> | tail <pathna
         --remote-path PATH           Remote path for synchronization (server)  
         --server IP                  Server IP address (client)  
         --debug                      Enable debug mode   
-        --dry-run                    Enable dry-run mode. No transfers. (client)  
+        --dry-run                    Enable dry-run mode. No transfers. (server)  
         --help                       Display help  
+
 
 ## Getting started
 
