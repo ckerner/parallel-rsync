@@ -113,6 +113,36 @@ class Server
     @all_jobs_dispatched = true
   end
 
+def handle_request( client, request )
+  case request['command']
+  when 'work'
+    if @jobs.empty?
+       response = { status: 'no work' }
+    else
+      job = @jobs.pop
+      @active_clients += 1
+      log("[#{Time.now}] Dispatched: #{client.peeraddr.last} #{job[:identifier]} #{job[:path]}")
+      response = { status: 'work', command: job[:command], identifier: job[:identifier], path: job[:path] }
+    end
+
+  when 'status'
+    response = { status: 'state', clients: @active_clients }
+    log("[#{Time.now}] Dispatched: #{client.peeraddr.last} #{job[:identifier]} #{job[:path]}")
+  when 'done'
+    log("[#{Time.now}] Completed: #{request['identifier']}  path: #{request['path']}, return_code: #{request['return_code']}")
+    rc = request['return_code']
+    @return_codes[rc] += 1
+
+    @active_clients -= 1
+    response = { status: 'ok' }
+  when 'end'
+    exit 0
+  when 'state'
+    { response: 'state' }
+  end
+  return response
+end
+
   def start
     begin
       server = TCPServer.new(@port)
@@ -126,40 +156,31 @@ class Server
     @return_codes ||= {}
     loop do
       break unless @server_running
-      client = server.accept
+      Thread.start(server.accept) do |client|
+      begin
+        data = client.gets
+        if data
+          request = JSON.parse(data.strip) rescue nil
+          response = request ? handle_request(client,request) : { error: 'Invalid JSON' }
+        else
+          response = { error: 'No data received' }
+        end
+	client.puts response.to_json 
+      rescue StandardError => e
+        client.puts({ error: e.message }.to_json)
+      ensure
+        client.close
+      end
+
       if @all_jobs_dispatched && @jobs.empty? && @active_clients == 0
         log("All jobs processed. Shutting down server.")
         @server_running = false
-        server.close
 	generate_server_report
-        break
-      end
-      if @jobs.empty?
-        client.puts({ status: 'no work' }.to_json)
-        client.close
-        next
-      end
-      job = @jobs.pop
-      @active_clients += 1
-      log("[#{Time.now}] Dispatched: #{client.peeraddr.last} #{job[:identifier]} #{job[:path]}")
-      client.puts({ status: 'work', command: job[:command], identifier: job[:identifier], path: job[:path] }.to_json)
-      # Wait for client to respond with completion
-      begin
-        response = client.gets
-        if response
-           result = JSON.parse(response.chomp)
-           log("[#{Time.now}] Completed: #{client.peeraddr.last} #{result['identifier']} #{result['path']} RC: #{result['return_code']}")
-	   rc = result['return_code']
-           @return_codes[rc] += 1
-        end
-      rescue StandardError => e
-        log("Error receiving response from client: #{e.message}")
-      ensure
-        client.close
-        @active_clients -= 1
       end
     end
   end
+end
+
 end
 
 class Client
@@ -187,23 +208,28 @@ class Client
     log("-------------------------------")
   end
 
+  def send_request(command)
+    socket = TCPSocket.new(@server, @port)
+    socket.puts command
+    response = socket.gets
+    socket.close
+    JSON.parse(response.chomp) rescue { error: 'Invalid response from server' }
+  end
+
   def start
     log("Client started, connecting to #{@server}:#{@port}")
     @return_codes ||= {}
     loop do
        begin
-         socket = TCPSocket.new(@server, @port)
-         response = socket.gets
+         response = send_request( {command: 'work'}.to_json )
          if response.nil?
            log("No response from server. Exiting.")
            generate_report
            exit 1
          end
-         response = JSON.parse(response.chomp)
          if response["status"] == "no work"
            log("No work available. Generating report and exiting.")
            generate_report
-           socket.close
            break
          end
 
@@ -217,12 +243,12 @@ class Client
          system(response['command'])
          rc = $?.exitstatus
 
-         # Send completion message before closing
-         socket.puts({ identifier: response['identifier'], path: response['path'], return_code: rc }.to_json)
+         resp = { command: 'done', identifier: response['identifier'], path: response['path'], return_code: rc }.to_json
+	 server_response = send_request( resp )
 
+         puts server_response
          @return_codes[rc] += 1
          log("Task #{response['identifier']} completed with return code #{rc}")
-         socket.close
 	 exit 1 if @debug
        rescue Errno::EPIPE
          log("Error: Broken pipe - server may have closed connection.")
@@ -239,8 +265,8 @@ class Client
       end
     end
   end
-end
 
+end
 
 def display_log(display_type, search_path)
   server_log = 'server_logs/server.log'
