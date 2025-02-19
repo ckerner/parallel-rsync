@@ -18,7 +18,7 @@ require 'socket'
 
 options = { port: 8812, depth: 3, debug: false }
 OptionParser.new do |opts|
-  opts.banner = "Usage: psync server [options] | client [options] | log <pathname> | tail <pathname> | task <token id> "
+  opts.banner = "Usage: psync server [options] | client [options] | log <pathname|token id> | tail <pathname|token id> | state "
   opts.on("--port PORT", "Server/client port (default: 8812)") { |v| options[:port] = v.to_i }
   opts.on("--source DIR", "Source directory (server)") { |v| options[:source_dir] = v }
   opts.on("--depth DEPTH", "Depth to search (server, default: 3)") { |v| options[:depth] = v.to_i }
@@ -53,6 +53,7 @@ class Server
     @debug = options[:debug]
     @dryrun = options[:dryrun]
     @jobs = Queue.new
+    @total_jobs = 0
     @log_file = "server_logs/server.log"
     FileUtils.touch(@log_file)
     @active_clients = 0
@@ -105,6 +106,7 @@ class Server
           log_file = "transfer_logs/transfer_#{identifier}.log"
           rsync_cmd = "rsync #{@rsync_opts} #{recursive} #{do_xfers} #{dir}/ #{server}:#{@remote_path}/#{relative_path}/ &>> #{log_file}"
           @jobs.push({ command: rsync_cmd, identifier: identifier, server: server, path: dir })
+	  @total_jobs += 1
           log("Generated rsync command for #{dir} -> #{server}:#{@remote_path}/#{relative_path} with ID #{identifier}") if @debug
         end
       end
@@ -138,7 +140,7 @@ def handle_request( client, request )
   when 'end'
     exit 0
   when 'state'
-    { response: 'state' }
+    response = { status: 'state' , total_xfers: @total_jobs, left_xfers: @jobs.size, clients: @active_clients, return_codes: @return_codes }
   end
   return response
 end
@@ -315,6 +317,33 @@ def display_log(display_type, search_path)
   end
 end
 
+def server_state( options )
+  @server = options[:server]
+  @port = options[:port]
+
+  begin
+    socket = TCPSocket.new(@server, @port)
+    socket.puts({command: 'state'}.to_json)
+    response = socket.gets
+    socket.close
+    resp = JSON.parse(response.chomp) rescue { error: 'Invalid response from server' }
+
+    puts "Total Jobs: #{resp['total_xfers']}"
+    puts " Remaining: #{resp['left_xfers']}"
+    puts "   Clients: #{resp['clients']}"
+    resp['return_codes'].each do |code, count|
+      puts "Return Code #{code}: #{count} occurrences"
+    end
+  rescue Errno::EPIPE
+    puts "Error: Broken pipe - server may have closed connection."
+    exit 1
+  rescue Errno::ECONNREFUSED
+    puts "Error: Connection refused. Exiting."
+    exit 1
+  end
+end
+
+
 if ARGV[0] == 'server'
   if options[:source_dir].nil? || options[:remote_servers].nil? || options[:remote_path].nil?
     puts "Missing server parameters. Use --help for details."
@@ -329,20 +358,14 @@ elsif ARGV[0] == 'client'
   end
   client = Client.new(options)
   client.start
+elsif ARGV[0] == 'state'
+  server_state(options)
 elsif ARGV[0] == 'log' || ARGV[0] == 'tail' 
   if ARGV[1].nil?
-    puts "Missing path to search for. Use --help for details."
+    puts "Missing token id or path to search for. Use --help for details."
     exit 1
   end
   display_log( ARGV[0], ARGV[1] )
-elsif ARGV[0] == 'task'
-  if ARGV[1].nil?
-    puts "Missing log token to search for. Use --help for details."
-    exit 1
-  end
-  log_token = ARGV[1] 
-  log_file = "transfer_logs/transfer_#{log_token}.log"
-  system("less #{log_file}")
 else
   puts "Usage: psync < server | client | log | tail | task > [options]"
   exit 1
