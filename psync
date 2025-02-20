@@ -1,4 +1,4 @@
-#!/usr/local/bin/ruby
+#!/usr/local/bin/ruby 
 #
 # psync - Parallel rsync client/server utility
 #
@@ -15,6 +15,7 @@ require 'fileutils'
 require 'optparse'
 require 'securerandom'
 require 'socket'
+
 
 options = { port: 8812, depth: 3, threads: 4, debug: false, summary: false }
 OptionParser.new do |opts|
@@ -136,7 +137,7 @@ def handle_request( client, request )
     log("Dispatched: #{client.peeraddr.last} #{job[:identifier]} #{job[:path]}")
   when 'done'
     @dispatched_jobs[client.peeraddr.last].delete(request['identifier'])
-    log("Completed: #{client.peeraddr.last} #{request['identifier']} #{request['path']} RC: #{request['return_code']}")
+    log(" Completed: #{client.peeraddr.last} #{request['identifier']} #{request['path']} RC: #{request['return_code']}")
     rc = request['return_code']
     @return_codes[rc] += 1
 
@@ -191,6 +192,10 @@ end
 end
 
 class Client
+  @@return_codes = Hash.new(0)
+  @@thread_count = 0
+  @@thread_mutex = Mutex.new
+
   def initialize(options)
     @server = options[:server]
     @port = options[:port]
@@ -199,46 +204,62 @@ class Client
     @summary = options[:summary]
     @log_file = "client_logs/client_#{Socket.gethostname}_#{Process.pid}.log"
     FileUtils.touch(@log_file)
-    @return_codes = Hash.new(0)
   end
 
   def log(message)
-    puts message
+    puts ("[#{Time.now}] #{message}")
     File.open(@log_file, 'a') { |f| f.puts("[#{Time.now}] #{message}") }
   end
 
   def generate_report
-    return if @return_codes.nil? || @return_codes.empty?
+    return if @@return_codes.nil? || @@return_codes.empty?
     log("--- Transfer Summary Report ---")
-    log("Total rsync transfers: #{@return_codes.values.sum}")
-    @return_codes.sort.each do |code, count|
+    log("Total rsync transfers: #{@@return_codes.values.sum}")
+    @@return_codes.sort.each do |code, count|
       log("Return Code #{code}: #{count} occurrences")
     end
     log("-------------------------------")
   end
 
   def send_request(command)
-    socket = TCPSocket.new(@server, @port)
-    socket.puts command
-    response = socket.gets
-    socket.close
-    JSON.parse(response.chomp) rescue { error: 'Invalid response from server' }
+    socket = nil
+    begin
+      socket = TCPSocket.new(@server, @port)
+      if socket.nil?
+        @@thread_mutex.synchronize{ @@thread_count -= 1 }
+        generate_report if @summary && @@thread_count == 0
+        return
+      end
+      socket.puts command if socket && !socket.closed?
+      socket.flush
+      response = socket.gets if socket && !socket.closed?
+      return JSON.parse(response.chomp) rescue { error: 'Invalid response from server' }
+
+    rescue Errno::ECONNRESET
+      return
+    rescue StandardError => e
+      puts "Unexpeted Error: #{e.lass} - #{e.message}" if @debug
+      return
+    ensure
+      socket.close if socket && !socket.closed?
+    end
   end
 
   def start
     log("Client started, connecting to #{@server}:#{@port}")
-    @return_codes ||= {}
+    @@return_codes ||= {}
+    @@thread_mutex.synchronize{ @@thread_count += 1 }
     loop do
        begin
          response = send_request( {command: 'work'}.to_json )
          if response.nil?
-           log("No response from server. Exiting.")
-           generate_report if @summary
-           exit 1
+           @@thread_mutex.synchronize{ @@thread_count -= 1 }
+           generate_report if @summary && @@thread_count == 0
+           return
          end
          if response["status"] == "no work"
-           log("No work available. Generating report and exiting.")
-           generate_report if @summary
+           @@thread_mutex.synchronize{ @@thread_count -= 1 }
+           generate_report if @summary && @@thread_count == 0
            break
          end
 
@@ -257,22 +278,21 @@ class Client
          resp = { command: 'done', identifier: response['identifier'], path: response['path'], return_code: rc }.to_json
 	 server_response = send_request( resp )
 
-         #puts server_response
-         @return_codes[rc] += 1
-         log("Task #{response['identifier']} completed with return code #{rc}")
+	 @@thread_mutex.synchronize{ @@return_codes[rc] += 1 }
+         log("Finished task: #{response['identifier']} #{response['path']} RC: #{rc}")
 	 exit 1 if @debug
        rescue Errno::EPIPE
+         @@thread_mutex.synchronize{ @@thread_count -= 1 }
          log("Error: Broken pipe - server may have closed connection.")
-         generate_report if @summary
-         exit 1
+         return
        rescue Errno::ECONNREFUSED
+         @@thread_mutex.synchronize{ @@thread_count -= 1 }
          log("Error: Connection refused. Exiting.")
-         generate_report if @summary
-         exit 1
+         return
        rescue StandardError => e
+         @@thread_mutex.synchronize{ @@thread_count -= 1 }
          log("Error: #{e.message}")
-         generate_report if @summary
-         exit 1
+         return
       end
     end
   end
@@ -304,8 +324,8 @@ def display_log(display_type, search_path)
 
     if line.include?('Dispatched')
       fields = line.split
-      if fields.length >= 9
-        log_token = fields[8]
+      if fields.length >= 6
+        log_token = fields[5]
         log_file = "transfer_logs/transfer_#{log_token}.log"
         puts "Log File: #{log_file}"
 
@@ -388,6 +408,7 @@ elsif ARGV[0] == 'client'
     puts "Missing client parameters. Use --help for details."
     exit 1
   end
+
   threads = []
 
   options[:threads].times do
@@ -396,7 +417,7 @@ elsif ARGV[0] == 'client'
         client = Client.new(options)
         client.start
       rescue StandardError => e
-        puts "Error in thread: ${e.message}"
+        puts "Error in thread: #{e.message}"
       end
     end
   end
