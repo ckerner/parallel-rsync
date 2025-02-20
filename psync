@@ -16,9 +16,9 @@ require 'optparse'
 require 'securerandom'
 require 'socket'
 
-options = { port: 8812, depth: 3, debug: false, summary: false }
+options = { port: 8812, depth: 3, threads: 4, debug: false, summary: false }
 OptionParser.new do |opts|
-  opts.banner = "Usage: psync server [options] | client [options] | log <pathname|token id> | tail <pathname|token id> | state "
+  opts.banner = "Usage: psync server [options] | client [options] | log <pathname|token id> | tail <pathname|token id> | state | errors "
   opts.on("--port PORT", "Server/client port (default: 8812)") { |v| options[:port] = v.to_i }
   opts.on("--source DIR", "Source directory (server)") { |v| options[:source_dir] = v }
   opts.on("--depth DEPTH", "Depth to search (server, default: 3)") { |v| options[:depth] = v.to_i }
@@ -31,6 +31,7 @@ OptionParser.new do |opts|
   end
   opts.on("--remote-path PATH", "Remote path for synchronization (server)") { |v| options[:remote_path] = v }
   opts.on("--server IP", "Server IP address (client)") { |v| options[:server] = v }
+  opts.on("--threads THREADS", "Number of client threads to run (client, default: 4)") { |v| options[:threads] = v.to_i }
   opts.on("--summary", "Enable individual client log summary ") { options[:summary] = true }
   opts.on("--debug", "Enable debug mode ") { options[:debug] = true }
   opts.on("--dry-run", "Enable dry-run mode. No transfers. (server)") { options[:dryrun] = true }
@@ -89,7 +90,7 @@ class Server
     return if @return_codes.nil? || @return_codes.empty?
     log("--- Transfer Summary Report ---")
     log("Total rsync transfers: #{@return_codes.values.sum}")
-    @return_codes.each do |code, count|
+    @return_codes.sort.each do |code, count|
       log("Return Code #{code}: #{count} occurrences")
     end
     log("-------------------------------")
@@ -194,6 +195,7 @@ class Client
     @server = options[:server]
     @port = options[:port]
     @debug = options[:debug]
+    @threads = options[:threads]
     @summary = options[:summary]
     @log_file = "client_logs/client_#{Socket.gethostname}_#{Process.pid}.log"
     FileUtils.touch(@log_file)
@@ -209,7 +211,7 @@ class Client
     return if @return_codes.nil? || @return_codes.empty?
     log("--- Transfer Summary Report ---")
     log("Total rsync transfers: #{@return_codes.values.sum}")
-    @return_codes.each do |code, count|
+    @return_codes.sort.each do |code, count|
       log("Return Code #{code}: #{count} occurrences")
     end
     log("-------------------------------")
@@ -386,8 +388,19 @@ elsif ARGV[0] == 'client'
     puts "Missing client parameters. Use --help for details."
     exit 1
   end
-  client = Client.new(options)
-  client.start
+  threads = []
+
+  options[:threads].times do
+    threads << Thread.new do
+      begin
+        client = Client.new(options)
+        client.start
+      rescue StandardError => e
+        puts "Error in thread: ${e.message}"
+      end
+    end
+  end
+  threads.each(&:join)
 elsif ARGV[0] == 'state'
   server_state(options)
 elsif ARGV[0] == 'errors'
