@@ -119,37 +119,37 @@ class Server
     @all_jobs_dispatched = true
   end
 
-def handle_request( client, request )
-  case request['command']
-  when 'work'
-    if @jobs.empty?
-       response = { status: 'no work' }
-    else
-      job = @jobs.pop
-      @active_clients += 1
-      @dispatched_jobs[client.peeraddr.last][job[:identifier]] = job[:path]
+  def handle_request( client, request )
+    case request['command']
+    when 'work'
+      if @jobs.empty?
+         response = { status: 'no work' }
+      else
+        job = @jobs.pop
+        @active_clients += 1
+        @dispatched_jobs[client.peeraddr.last][job[:identifier]] = job[:path]
+        log("Dispatched: #{client.peeraddr.last} #{job[:identifier]} #{job[:path]}")
+        response = { status: 'work', command: job[:command], identifier: job[:identifier], path: job[:path] }
+      end
+
+    when 'status'
+      response = { status: 'state', clients: @active_clients }
       log("Dispatched: #{client.peeraddr.last} #{job[:identifier]} #{job[:path]}")
-      response = { status: 'work', command: job[:command], identifier: job[:identifier], path: job[:path] }
+    when 'done'
+      @dispatched_jobs[client.peeraddr.last].delete(request['identifier'])
+      log(" Completed: #{client.peeraddr.last} #{request['identifier']} #{request['path']} RC: #{request['return_code']}")
+      rc = request['return_code']
+      @return_codes[rc] += 1
+  
+      @active_clients -= 1
+      response = { status: 'ok' }
+    when 'end'
+      exit 0
+    when 'state'
+      response = { status: 'state' , total_xfers: @total_jobs, left_xfers: @jobs.size, clients: @active_clients, dispatched: @dispatched_jobs, return_codes: @return_codes }
     end
-
-  when 'status'
-    response = { status: 'state', clients: @active_clients }
-    log("Dispatched: #{client.peeraddr.last} #{job[:identifier]} #{job[:path]}")
-  when 'done'
-    @dispatched_jobs[client.peeraddr.last].delete(request['identifier'])
-    log(" Completed: #{client.peeraddr.last} #{request['identifier']} #{request['path']} RC: #{request['return_code']}")
-    rc = request['return_code']
-    @return_codes[rc] += 1
-
-    @active_clients -= 1
-    response = { status: 'ok' }
-  when 'end'
-    exit 0
-  when 'state'
-    response = { status: 'state' , total_xfers: @total_jobs, left_xfers: @jobs.size, clients: @active_clients, dispatched: @dispatched_jobs, return_codes: @return_codes }
+    return response
   end
-  return response
-end
 
   def start
     begin
@@ -165,29 +165,29 @@ end
     loop do
       break unless @server_running
       Thread.start(server.accept) do |client|
-      begin
-        data = client.gets
-        if data
-          request = JSON.parse(data.strip) rescue nil
-          response = request ? handle_request(client,request) : { error: 'Invalid JSON' }
-        else
-          response = { error: 'No data received' }
+        begin
+          data = client.gets
+          if data
+            request = JSON.parse(data.strip) rescue nil
+            response = request ? handle_request(client,request) : { error: 'Invalid JSON' }
+          else
+            response = { error: 'No data received' }
+          end
+  	client.puts response.to_json 
+        rescue StandardError => e
+          client.puts({ error: e.message }.to_json)
+        ensure
+          client.close
         end
-	client.puts response.to_json 
-      rescue StandardError => e
-        client.puts({ error: e.message }.to_json)
-      ensure
-        client.close
-      end
 
-      if @all_jobs_dispatched && @jobs.empty? && @active_clients == 0
-        log("All jobs processed. Shutting down server.")
-        @server_running = false
-	generate_server_report
+        if @all_jobs_dispatched && @jobs.empty? && @active_clients == 0
+          log("All jobs processed. Shutting down server.")
+          @server_running = false
+          generate_server_report
+        end
       end
     end
   end
-end
 
 end
 
