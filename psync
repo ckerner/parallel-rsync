@@ -65,19 +65,19 @@ class Server
     @return_codes = Hash.new(0)
     @dispatched_jobs = Hash.new { |h, k| h[k] = Hash.new }
 
-    # THESE ARE     |---------------> skip newer files on receiver
-    # THE NECESSARY ||--------------> directories
-    # OPTIONS FOR   |||-------------> copy symlinks
-    # THE SYNC TO   ||||------------> copy hard links
-    # COPY ALL OF   |||||-----------> copy permissions
-    # THE DATA.     ||||||----------> copy owner
-    # IF YOU ARE    |||||||---------> copy group
-    # GOING TO      ||||||||--------> copy ACLs
-    # MODIFY THEM   |||||||||-------> copy XATTRs
-    # IT IS AT YOUR ||||||||||------> show progress 
-    # OWN RISK.     |||||||||||-----> copy device files
-    #               ||||||||||||----> run in verbose mode
-    # USE --dry-run |||||||||||||---> Add a 2nd to log every file 
+    # THESE ARE     |---------------> u - skip newer files on receiver
+    # THE NECESSARY ||--------------> d - directories
+    # OPTIONS FOR   |||-------------> l - copy symlinks
+    # THE SYNC TO   ||||------------> H - copy hard links
+    # COPY ALL OF   |||||-----------> p - copy permissions
+    # THE DATA.     ||||||----------> o - copy owner
+    # IF YOU ARE    |||||||---------> g - copy group
+    # GOING TO      ||||||||--------> A - copy ACLs
+    # MODIFY THEM   |||||||||-------> X - copy XATTRs
+    # IT IS AT YOUR ||||||||||------> P - show progress 
+    # OWN RISK.     |||||||||||-----> D - copy device files
+    #               ||||||||||||----> v - run in verbose mode
+    # USE --dry-run |||||||||||||---> v - Add a 2nd to log every file 
     # TO VERIFY     |||||||||||||   
     @rsync_opts = '-udlHpogAXPDvv'
   end
@@ -246,7 +246,6 @@ class Client
   end
 
   def start
-    log("Client started, connecting to #{@server}:#{@port}")
     @@return_codes ||= {}
     @@thread_mutex.synchronize{ @@thread_count += 1 }
     loop do
@@ -383,7 +382,7 @@ def server_state( options )
     end
 
     puts "\nReturn Code Summary"
-    resp['return_codes'].each do |code, count|
+    resp['return_codes'].sort.each do |code, count|
       puts "Return Code #{code}: #{count} occurrences"
     end
   rescue Errno::EPIPE
@@ -409,6 +408,7 @@ elsif ARGV[0] == 'client'
     exit 1
   end
 
+  puts ("Client started. Connetd: #{options[:server]}:#{options[:port]}  Threads: #{options[:threads]}") 
   threads = []
 
   options[:threads].times do
@@ -422,7 +422,7 @@ elsif ARGV[0] == 'client'
     end
   end
   threads.each(&:join)
-elsif ARGV[0] == 'state'
+elsif ARGV[0] == 'state' || ARGV[0] == 'status'
   server_state(options)
 elsif ARGV[0] == 'errors'
   print_error_report(options)
@@ -433,7 +433,7 @@ elsif ARGV[0] == 'log' || ARGV[0] == 'tail'
   end
   display_log( ARGV[0], ARGV[1] )
 else
-  puts "Usage: psync < server | client | log | tail | task > [options]"
+  puts "Usage: psync < server | client | state | log | tail | errors > [options]"
   exit 1
 end
 
